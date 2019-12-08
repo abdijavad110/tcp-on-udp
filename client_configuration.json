@@ -1,0 +1,6 @@
+{
+  "UDP_IP": "127.0.0.1",
+  "UDP_PORT": 8007,
+  "TCP_PORT": 1234,
+  "DATA_TRANSMISSION_TIME": 10
+}
