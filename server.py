@@ -1,16 +1,32 @@
 import socket
+import logging
 import threading
 from conf import Conf
 from time import sleep
 from packet import Packet
 from random import randint
 
+
+def setup_logger():
+    formatter = logging.Formatter('%(asctime)s: Packet %(message)s received.')
+    handler = logging.FileHandler('server_received_packets_log.txt', mode='w')
+    handler.setFormatter(formatter)
+    global rcvd_pkts
+    rcvd_pkts = logging.getLogger('server_received_packets')
+    rcvd_pkts.setLevel(logging.INFO)
+    rcvd_pkts.addHandler(handler)
+
+
+rcvd_pkts = None
+setup_logger()
+
 connected_tcp_conn = []
 rcv_buffer = []
 conn_lock = threading.Lock()
 
+drop_list = [25, 60, 74]
 
-drop_list = [30, 30, 30]
+
 # drop_list = []
 
 
@@ -61,7 +77,7 @@ class TCP:
     def snd_service(self):
         while True:
             while len(self.out_Q) == 0:
-                sleep(.001)
+                sleep(.0003)
 
             self.out_lock.acquire()
             pkt = self.out_Q[0]
@@ -83,8 +99,7 @@ class TCP:
 
             pkt, ok = Packet.unpack(self.in_Q[0])
 
-
-            print "received packet", pkt.seq_no
+            rcvd_pkts.info(str(pkt.seq_no))
 
             self.in_lock.acquire()
             self.in_Q.pop(0)

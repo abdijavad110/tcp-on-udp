@@ -1,9 +1,48 @@
+import os
 import socket
+import logging
 import threading
 from conf import Conf
 from packet import Packet
-from time import time, sleep
 from random import randint
+from time import time, sleep
+
+
+def setup_loggers():
+    cwnd_formatter = logging.Formatter('%(asctime)s: CWND size changed to: %(message)s')
+    rtt_formatter = logging.Formatter('%(asctime)s: sample rtt is: %(message)s')
+    drp_formatter = logging.Formatter('%(asctime)s: Packet %(message)s dropped.')
+
+    cwnd_handler = logging.FileHandler('client_CWND_log.txt', mode='w')
+    rtt_handler = logging.FileHandler('client_Sample_rtt.txt', mode='w')
+    drp_handler = logging.FileHandler('client_dropped_packets_log.txt', mode='w')
+
+    cwnd_handler.setFormatter(cwnd_formatter)
+    rtt_handler.setFormatter(rtt_formatter)
+    drp_handler.setFormatter(drp_formatter)
+
+    global clt_cwnd_log, clt_rtt_log, clt_drp_log
+
+    clt_cwnd_log = logging.getLogger('client_CWND_log')
+    clt_rtt_log = logging.getLogger('client_Sample_rtt')
+    clt_drp_log = logging.getLogger('client_dropped_packets_log')
+
+    clt_cwnd_log.setLevel(logging.INFO)
+    clt_rtt_log.setLevel(logging.INFO)
+    clt_drp_log.setLevel(logging.INFO)
+
+    clt_cwnd_log.addHandler(cwnd_handler)
+    clt_rtt_log.addHandler(rtt_handler)
+    clt_drp_log.addHandler(drp_handler)
+
+
+def plot():
+    os.system("python3.6 plotter.py")
+    pass
+
+
+clt_cwnd_log, clt_rtt_log, clt_drp_log = [None] * 3
+setup_loggers()
 
 
 class UDP:
@@ -33,12 +72,17 @@ class TCP:
         self.out_lock = threading.Lock()
 
         self.wnd = []
+        self.snd_time = []
         self.wnd_size = 1
-        self.time_out = 4
         self.snd_base = self.seq_no
         self.wnd_lock = threading.Lock()
 
+        self.est_rtt = 1
+        self.dev_rtt = 0
+        self.time_out = 1
         self.timer = TCP.Timer(self)
+        self.alpha = Conf.CLIENT_CONF.TIMEOUT_ALPHA
+        self.beta = Conf.CLIENT_CONF.TIMEOUT_BETA
 
         self.__create_conn()
 
@@ -121,11 +165,18 @@ class TCP:
                         continue
 
                     self.wnd = self.wnd[idx + 1:]
+                    sample_rtt = self.snd_time[idx] - time()
+                    self.snd_time = self.snd_time[idx + 1:]
+
+                    clt_rtt_log.info(sample_rtt)
+                    self.est_rtt = (1 - self.alpha) * self.est_rtt + self.alpha * sample_rtt
+                    self.dev_rtt = (1 - self.beta) * self.dev_rtt + self.beta * abs(sample_rtt - self.est_rtt)
 
                     # for all received packets
                     # self.wnd_size = self.wnd_size + idx + 1 if self.wnd_size + idx + 1 <= 20 else 20
                     # for just ack
                     self.wnd_size = self.wnd_size + 1 if self.wnd_size < 20 else 20
+                    clt_cwnd_log.info(self.wnd_size)
 
                     if len(self.wnd) != 0:
                         self.timer.restart()
@@ -148,9 +199,6 @@ class TCP:
             self.out_lock.acquire()
             pkt = self.out_Q.pop(0)
             msg = pkt.pack()
-
-
-            print "....sending", pkt.seq_no, "WS:", self.wnd_size
 
             udp.send(msg, (Conf.SERVER_CONf.UDP_IP, Conf.SERVER_CONf.UDP_PORT))
             self.out_lock.release()
@@ -178,15 +226,17 @@ class TCP:
             self.start()
 
     def time_out_func(self):
-        print "%%%% timed out", "wnd:", self.wnd
         self.wnd_lock.acquire()
         if len(self.wnd) == 0:
             self.wnd_lock.release()
             return
         not_yet_acked = self.wnd[0]
+        clt_drp_log.info(not_yet_acked)
+        self.snd_time[0] = time()
         self.enq_out(Packet(self.port, self.listener_port, not_yet_acked, 0, ack=0), high_priority=True)
         self.timer.restart()
         self.wnd_size = self.wnd_size // 2 if self.wnd_size > 1 else 1
+        clt_cwnd_log.info(self.wnd_size)
         self.wnd_lock.release()
 
     def send_test_data(self):
@@ -197,9 +247,10 @@ class TCP:
                 if len(self.wnd) < self.wnd_size:
                     break
                 self.wnd_lock.release()
-                sleep(0.02)
+                sleep(0.005)
 
             self.wnd.append(self.seq_no)
+            self.snd_time.append(time())
             self.enq_out(Packet(self.port, self.listener_port, self.seq_no, 0, ack=0))
 
             self.seq_no += 1
@@ -209,17 +260,18 @@ class TCP:
 
 
 if __name__ == "__main__":
-        udp = UDP()
+    udp = UDP()
 
-        # initiate TCP
-        tcp = TCP()
+    # initiate TCP
+    tcp = TCP()
 
-        # send data
-        sleep(5)
-        tcp.send_test_data()
+    # send data
+    sleep(3)
+    tcp.send_test_data()
 
-        # close TCP
-        sleep(3)  # delete later
-        tcp.close_conn()
-        tcp.rcv_thread.join()
-        tcp.snd_base
+    # close TCP
+    sleep(1)  # delete later
+    tcp.close_conn()
+    tcp.rcv_thread.join()
+
+    # plot()
